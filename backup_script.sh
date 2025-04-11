@@ -1,71 +1,56 @@
 #!/bin/bash
 
-# backup_script.sh
+SOURCE_DIR="/home/user/data"        # Directory to back up (change as needed)
+BACKUP_DEST="/backups"              # Backup storage
+BACKUP_RETENTION=7                  # Days to keep backups
+LOG_DEST="/var/log/mybackups"       # Log storage
+LOG_RETENTION=5                     # Number of logs to keep
+BACKUP_FILE="backup-$(date +%Y%m%d_%H%M%S).tar.gz"  # Backup file name
+LOG_FILE="$LOG_DEST/backup-$(date +%Y%m%d_%H%M%S).log"  # Log file name
+EMAIL_TO="admin@localhost"          # Email for alerts
+EMAIL_FROM="backup@localhost"       # Sender email
 
-# Configurable variables
-SOURCE_DIR="/var/www"                  # Directory to backup
-BACKUP_DIR="/backups"                  # Backup storage location
-RETENTION_DAYS=7                       # Number of days to keep backups
-LOG_DIR="/var/log/backups"             # Log storage location
-LOG_RETENTION=5                        # Number of logs to keep
-EMAIL=""              # Admin email for alerts
+# Create directories if they don't exist
+mkdir -p "$BACKUP_DEST" "$LOG_DEST"
 
-# Fixed variables
-DATE=$(date +%Y-%m-%d_%H-%M-%S)
-BACKUP_FILE="backup_$DATE.tar.gz"
-LOG_FILE="$LOG_DIR/backup_$DATE.log"
-HOSTNAME=$(hostname)
-
-# Function to send email alert
-send_alert() {
-    local subject="$1"
-    local message="$2"
-    echo "$message" | mail -s "[Backup Failure] $subject on $HOSTNAME" "$EMAIL"
+# Logg
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-# Create necessary directories
-mkdir -p "$BACKUP_DIR" "$LOG_DIR"
+# alert 
+alert() {
+    local subject="$1"
+    local message="$2"
+    echo "$message" | mail -s "$subject" -r "$EMAIL_FROM" "$EMAIL_TO"
+}
 
-# Start logging
-echo "Backup started at $(date)" > "$LOG_FILE"
+# Start backup 
+log "Starting backup of $SOURCE_DIR"
 
-# Check if source directory exists
-if [ ! -d "$SOURCE_DIR" ]; then
-    echo "Error: Source directory $SOURCE_DIR does not exist" >> "$LOG_FILE"
-    send_alert "Source Directory Missing" "Backup failed: Source directory $SOURCE_DIR not found"
+# Create backup
+if tar -czf "$BACKUP_DEST/$BACKUP_FILE" "$SOURCE_DIR" 2>/dev/null; then
+    log "Created backup: $BACKUP_FILE"
+else
+    log "Error: Failed to create backup"
+    alert "Backup Failed - $(date +%Y-%m-%d)" "Could not back up $SOURCE_DIR. Check $LOG_FILE."
     exit 1
 fi
 
-# Perform backup
-tar -czf "$BACKUP_DIR/$BACKUP_FILE" "$SOURCE_DIR" 2>> "$LOG_FILE"
-if [ $? -ne 0 ]; then
-    echo "Error: Backup compression failed" >> "$LOG_FILE"
-    send_alert "Backup Compression Failed" "Failed to create backup archive"
+# Verify backup 
+if [ ! -f "$BACKUP_DEST/$BACKUP_FILE" ]; then
+    log "Error: Backup file $BACKUP_FILE not found"
+    alert "Backup Failed - $(date +%Y-%m-%d)" "Backup file $BACKUP_FILE missing. Check $LOG_FILE."
     exit 1
 fi
 
-# Verify backup file was created
-if [ ! -f "$BACKUP_DIR/$BACKUP_FILE" ]; then
-    echo "Error: Backup file not created" >> "$LOG_FILE"
-    send_alert "Backup File Missing" "Backup file was not created successfully"
-    exit 1
-fi
-
-echo "Backup completed successfully at $(date)" >> "$LOG_FILE"
-
-# Cleanup old backups
-find "$BACKUP_DIR" -type f -name "backup_*.tar.gz" -mtime +$RETENTION_DAYS -exec rm -f {} \;
-if [ $? -ne 0 ]; then
-    echo "Warning: Old backup cleanup failed" >> "$LOG_FILE"
-    send_alert "Cleanup Failed" "Failed to remove old backups"
-fi
+# Clean old backups
+find "$BACKUP_DEST" -type f -name "backup-*.tar.gz" -mtime +"$BACKUP_RETENTION" -delete
+log "Removed backups older than $BACKUP_RETENTION days"
 
 # Rotate logs
-find "$LOG_DIR" -type f -name "backup_*.log" | sort -r | tail -n +$((LOG_RETENTION + 1)) | xargs -I {} rm -f {}
-if [ $? -ne 0 ]; then
-    echo "Warning: Log rotation failed" >> "$LOG_FILE"
-    send_alert "Log Rotation Failed" "Failed to rotate logs"
-fi
+find "$LOG_DEST" -type f -name "backup-*.log" -exec ls -t {} + | tail -n +"$((LOG_RETENTION + 1))" | xargs -r rm -f
+log "Rotated logs, keeping last $LOG_RETENTION logs"
 
-echo "Backup process finished at $(date)" >> "$LOG_FILE"
+log "Backup completed successfully"
 exit 0
